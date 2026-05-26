@@ -1,4 +1,15 @@
-import { useState, useRef, useCallback, useEffect, useReducer, useMemo } from "react";
+import { Suspense, lazy, useState, useRef, useCallback, useEffect, useReducer, useMemo } from "react";
+import {
+  DEFAULT_PANORAMA_ACTORS,
+  arrangePanoramaActors,
+  captureVideoFrame,
+  createPanoramaActor,
+  normalizePanoramaActors,
+  renderPanoramaBoardToDataUrl,
+  renderSceneBoardToDataUrl,
+} from "./panoramaTools.js";
+
+const Panorama3DStage = lazy(() => import("./Panorama3DStage.jsx"));
 
 /* ═══════════════════════════════════════════════════════════════════
    Cherry Canvas — 生产版 v3
@@ -551,6 +562,18 @@ const persistSourceAssetsInNodes = async (canvasNodes = []) => {
 };
 
 const stripSourceAssetPayload = (node) => {
+  if(node.type === "panorama-board" && node.panoramaAssetId && node.panoramaUrl?.startsWith?.("data:")){
+    return {
+      ...node,
+      panoramaUrl: "",
+    };
+  }
+  if(node.type === "scene-board" && node.sceneAssetId && node.sceneUrl?.startsWith?.("data:")){
+    return {
+      ...node,
+      sceneUrl: "",
+    };
+  }
   if(node.type === "source-image"){
     return {
       ...node,
@@ -578,10 +601,30 @@ const serializeCanvasNodes = (canvasNodes = []) => canvasNodes.map(stripSourceAs
 const hasUnpersistedSourceAssets = (canvasNodes = []) => canvasNodes.some(n => n.type === "source-image" && n.imageUrl?.startsWith?.("data:") && !n.assetId);
 
 const DEFAULT_CANVAS_ID = "canvas_1";
+const normalizeCanvasNode = (node = {}) => {
+  if(node.type === "panorama-board"){
+    return {
+      ...node,
+      name: node.name === "360排兵" || !node.name ? "360全景图" : node.name,
+      w: Math.max(Number(node.w) || 0, 580),
+      h: Math.max(Number(node.h) || 0, 640),
+    };
+  }
+  if(node.type === "scene-board"){
+    return {
+      ...node,
+      name: !node.name ? "普通场景图" : node.name,
+      w: Math.max(Number(node.w) || 0, 580),
+      h: Math.max(Number(node.h) || 0, 600),
+    };
+  }
+  return node;
+};
+
 const createCanvasRecord = (overrides = {}, index = 0) => ({
   id: overrides.id || `canvas_${uid()}`,
   name: overrides.name || (index === 0 ? "默认画布" : `新画布 ${index + 1}`),
-  nodes: Array.isArray(overrides.nodes) ? overrides.nodes : [],
+  nodes: Array.isArray(overrides.nodes) ? overrides.nodes.map(normalizeCanvasNode) : [],
   edges: Array.isArray(overrides.edges) ? overrides.edges : [],
   savedAt: overrides.savedAt || Date.now(),
 });
@@ -609,6 +652,20 @@ const serializeCanvasRecord = (canvas) => ({
 });
 
 const hydrateSourceNodes = async (canvasNodes = []) => Promise.all(canvasNodes.map(async node => {
+  if(node.type === "panorama-board" && node.panoramaAssetId && !node.panoramaUrl){
+    const asset = await getAsset(node.panoramaAssetId);
+    return {
+      ...node,
+      panoramaUrl: asset?.dataUrl || asset?.thumbUrl || "",
+    };
+  }
+  if(node.type === "scene-board" && node.sceneAssetId && !node.sceneUrl){
+    const asset = await getAsset(node.sceneAssetId);
+    return {
+      ...node,
+      sceneUrl: asset?.dataUrl || asset?.thumbUrl || "",
+    };
+  }
   if(!isSourceAssetType(node.type) || !node.assetId) return node;
   if(node.type !== "source-image" && (node.mediaUrl || node.text)) return node;
   const asset = await getAsset(node.assetId);
@@ -725,6 +782,8 @@ const NTYPES = {
   "source-audio": { label: "素材音频", icon: "audio", w: 320, h: 230, color: "cyan" },
   "source-text": { label: "文本素材", icon: "text", w: 340, h: 280, color: "blue" },
   "asset-folder": { label: "文件夹", icon: "folder", w: 360, h: 420, color: "gold" },
+  "panorama-board": { label: "360全景图", icon: "panorama", w: 580, h: 640, color: "cyan" },
+  "scene-board": { label: "普通场景图", icon: "image", w: 580, h: 600, color: "green" },
   "comment-note": { label: "便签", icon: "note", w: 300, h: 220, color: "gold" },
 };
 
@@ -752,6 +811,8 @@ const mkNode = (type, x, y, extra={}) => {
     : type==="source-video" || type==="source-audio" ? { mediaUrl: "", fileName: "", fileSize: 0, mimeType: "" }
     : type==="source-text" ? { text: "", fileName: "", fileSize: 0, mimeType: "text/plain" }
     : type==="asset-folder" ? { files: [], counts: {}, expanded: false, expandedNodeIds: [] }
+    : type==="panorama-board" ? { panoramaUrl: "", panoramaAssetId: "", panoramaOffset: 0, panoramaZoom: 1, actors: DEFAULT_PANORAMA_ACTORS }
+    : type==="scene-board" ? { sceneUrl: "", sceneAssetId: "", sceneZoom: 1, actors: DEFAULT_PANORAMA_ACTORS }
     : {};
   return {
     id: uid(), type, x, y, w: m.w, h: m.h, name: m.label, prompt: "",
@@ -782,6 +843,9 @@ const Icon = ({ name, size=14, c="currentColor", sw=2 }) => {
     copy: <><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></>,
     x: <><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>,
     folder: <><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></>,
+    panorama: <><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c3 3.2 3 14.8 0 18"/><path d="M12 3c-3 3.2-3 14.8 0 18"/></>,
+    camera: <><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></>,
+    user: <><circle cx="12" cy="7" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></>,
     minus: <><line x1="5" y1="12" x2="19" y2="12"/></>,
     check: <><polyline points="20 6 9 17 4 12"/></>,
     alert: <><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></>,
@@ -1705,6 +1769,204 @@ export default function CherryCanvas() {
     }
   }, [sN, toastFn]);
 
+  const addDataUrlSourceImage = useCallback(async ({ dataUrl, name, fileName, x, y, width = 1280, height = 720 }) => {
+    if(!dataUrl) return null;
+    const assetId = `asset_${uid()}`;
+    const safeName = name || "截图素材";
+    const safeFileName = fileName || `${safeName}.png`;
+    const thumbUrl = await createImageThumbnail(dataUrl);
+    await putAsset({
+      id: assetId,
+      dataUrl,
+      thumbUrl,
+      fileName: safeFileName,
+      fileSize: 0,
+      mimeType: "image/png",
+      updatedAt: Date.now(),
+    });
+    const m = NTYPES["source-image"];
+    const ratio = width > 0 && height > 0 ? width / height : 16 / 9;
+    const nodeW = Math.max(280, Math.min(440, m.w));
+    const nodeH = Math.max(240, Math.round(nodeW / ratio) + 84);
+    const node = mkNode("source-image", x, y, {
+      name: safeName,
+      w: nodeW,
+      h: nodeH,
+      assetId,
+      imageUrl: thumbUrl || dataUrl,
+      fileName: safeFileName,
+      fileSize: 0,
+      mimeType: "image/png",
+      genState: "done",
+      results: [{ id: uid(), ts: Date.now(), url: thumbUrl || dataUrl, fileName: safeFileName, assetId, data: { mimeType: "image/png" } }],
+    });
+    push([...nR.current, node], eR.current);
+    setSel(new Set([node.id]));
+    return node;
+  }, [push]);
+
+  const updatePanoramaImage = useCallback(async (nodeId, file) => {
+    if(!isImageFile(file)){ toastFn("请选择全景图片", "error"); return; }
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      const assetId = `asset_${uid()}`;
+      await putAsset({
+        id: assetId,
+        dataUrl,
+        thumbUrl: await createImageThumbnail(file, 1600),
+        fileName: file.name,
+        fileSize: file.size,
+        mimeType: file.type,
+        updatedAt: Date.now(),
+      });
+      uN(nodeId, {
+        panoramaUrl: dataUrl,
+        panoramaAssetId: assetId,
+        panoramaFileName: file.name,
+      });
+      toastFn("360 全景图已载入", "success");
+    } catch(err) {
+      toastFn(err.message || "全景图读取失败", "error");
+    }
+  }, [toastFn]);
+
+  const updateSceneImage = useCallback(async (nodeId, file) => {
+    if(!isImageFile(file)){ toastFn("请选择场景图片", "error"); return; }
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      const assetId = `asset_${uid()}`;
+      await putAsset({
+        id: assetId,
+        dataUrl,
+        thumbUrl: await createImageThumbnail(file, 1600),
+        fileName: file.name,
+        fileSize: file.size,
+        mimeType: file.type,
+        updatedAt: Date.now(),
+      });
+      uN(nodeId, {
+        sceneUrl: dataUrl,
+        sceneAssetId: assetId,
+        sceneFileName: file.name,
+      });
+      toastFn("普通场景图已载入", "success");
+    } catch(err) {
+      toastFn(err.message || "场景图读取失败", "error");
+    }
+  }, [toastFn]);
+
+  const getImageUrlForCapture = useCallback(async (node) => {
+    if(!node) return "";
+    if(node.assetId){
+      const asset = await getAsset(node.assetId);
+      if(asset?.dataUrl) return asset.dataUrl;
+    }
+    const latest = node.results?.[node.results.length - 1];
+    return node.imageUrl || latest?.url || resultImageUrlOf(latest) || "";
+  }, []);
+
+  const getPanoramaImageForCapture = useCallback(async (node) => {
+    if(!node) return "";
+    if(node.panoramaAssetId){
+      const asset = await getAsset(node.panoramaAssetId);
+      if(asset?.dataUrl) return asset.dataUrl;
+    }
+    if(node.panoramaUrl) return node.panoramaUrl;
+    const refEdge = eR.current.find(edge => edge.targetId === node.id);
+    const refNode = refEdge ? nR.current.find(n => n.id === refEdge.sourceId) : null;
+    if(refNode?.type === "source-image" || refNode?.type === "ai-image") return getImageUrlForCapture(refNode);
+    return "";
+  }, [getImageUrlForCapture]);
+
+  const getSceneImageForCapture = useCallback(async (node) => {
+    if(!node) return "";
+    if(node.sceneAssetId){
+      const asset = await getAsset(node.sceneAssetId);
+      if(asset?.dataUrl) return asset.dataUrl;
+    }
+    if(node.sceneUrl) return node.sceneUrl;
+    const refEdge = eR.current.find(edge => edge.targetId === node.id);
+    const refNode = refEdge ? nR.current.find(n => n.id === refEdge.sourceId) : null;
+    if(refNode?.type === "source-image" || refNode?.type === "ai-image") return getImageUrlForCapture(refNode);
+    return "";
+  }, [getImageUrlForCapture]);
+
+  const capturePanoramaBoard = useCallback(async (nodeId) => {
+    const node = nR.current.find(n => n.id === nodeId);
+    if(!node || node.type !== "panorama-board") return;
+    try {
+      const panoramaUrl = await getPanoramaImageForCapture(node);
+      const dataUrl = await renderPanoramaBoardToDataUrl({
+        panoramaUrl,
+        actors: node.actors,
+        width: Math.max(960, Math.round((node.w || 560) * 2)),
+        height: Math.max(540, Math.round((node.h || 520) * 1.35)),
+        offset: node.panoramaOffset,
+        zoom: node.panoramaZoom,
+      });
+      await addDataUrlSourceImage({
+        dataUrl,
+        name: `${node.name || "360排兵"} 截图`,
+        fileName: `${node.name || "panorama"}_${Date.now()}.png`,
+        x: node.x + node.w + 48,
+        y: node.y,
+        width: Math.max(960, Math.round((node.w || 560) * 2)),
+        height: Math.max(540, Math.round((node.h || 520) * 1.35)),
+      });
+      toastFn("已截图为素材图，可继续接入工作流", "success");
+    } catch(err) {
+      toastFn(err.message || "截图失败", "error");
+    }
+  }, [addDataUrlSourceImage, getPanoramaImageForCapture, toastFn]);
+
+  const captureSceneBoard = useCallback(async (nodeId) => {
+    const node = nR.current.find(n => n.id === nodeId);
+    if(!node || node.type !== "scene-board") return;
+    try {
+      const sceneUrl = await getSceneImageForCapture(node);
+      const dataUrl = await renderSceneBoardToDataUrl({
+        sceneUrl,
+        actors: node.actors,
+        width: Math.max(960, Math.round((node.w || 580) * 2)),
+        height: Math.max(540, Math.round((node.h || 600) * 1.22)),
+        zoom: node.sceneZoom,
+      });
+      await addDataUrlSourceImage({
+        dataUrl,
+        name: `${node.name || "普通场景图"} 截图`,
+        fileName: `${node.name || "scene"}_${Date.now()}.png`,
+        x: node.x + node.w + 48,
+        y: node.y,
+        width: Math.max(960, Math.round((node.w || 580) * 2)),
+        height: Math.max(540, Math.round((node.h || 600) * 1.22)),
+      });
+      toastFn("已截图为素材图，可继续接入工作流", "success");
+    } catch(err) {
+      toastFn(err.message || "截图失败", "error");
+    }
+  }, [addDataUrlSourceImage, getSceneImageForCapture, toastFn]);
+
+  const captureVideoNodeFrame = useCallback(async (nodeId) => {
+    const node = nR.current.find(n => n.id === nodeId);
+    if(!node || node.type !== "source-video") return;
+    try {
+      const video = document.querySelector(`video[data-video-node="${nodeId}"]`);
+      const frame = await captureVideoFrame(video);
+      await addDataUrlSourceImage({
+        dataUrl: frame.dataUrl,
+        name: `${stripFileExt(node.name || node.fileName || "视频")} ${frame.time.toFixed(2)}s`,
+        fileName: `${stripFileExt(node.fileName || node.name || "video")}_frame_${Math.round(frame.time * 1000)}.png`,
+        x: node.x + node.w + 44,
+        y: node.y,
+        width: frame.width,
+        height: frame.height,
+      });
+      toastFn("已抽取当前帧为素材图", "success");
+    } catch(err) {
+      toastFn(err.message || "抽帧失败：请先让视频加载并停在想要的画面", "error");
+    }
+  }, [addDataUrlSourceImage, toastFn]);
+
   const onCanvasDragOver = useCallback((e) => {
     if(hasFileDrag(e.dataTransfer)){
       e.preventDefault();
@@ -2187,6 +2449,26 @@ export default function CherryCanvas() {
 
   const uN = useCallback((id, patch) => sN(ns => ns.map(n => n.id===id ? { ...n, ...patch } : n)), [sN]);
 
+  const updatePanoramaActors = useCallback((nodeId, actors) => {
+    uN(nodeId, { actors: normalizePanoramaActors(actors) });
+  }, [uN]);
+
+  const patchPanoramaActor = useCallback((nodeId, actorId, patch) => {
+    sN(ns => ns.map(n => {
+      if(n.id !== nodeId) return n;
+      const actors = normalizePanoramaActors(n.actors).map(actor => actor.id === actorId ? { ...actor, ...patch } : actor);
+      return { ...n, actors, selectedActorId: actorId };
+    }));
+  }, [sN]);
+
+  const deletePanoramaActor = useCallback((nodeId, actorId) => {
+    sN(ns => ns.map(n => {
+      if(n.id !== nodeId) return n;
+      const actors = normalizePanoramaActors(n.actors).filter(actor => actor.id !== actorId);
+      return { ...n, actors, selectedActorId: "" };
+    }));
+  }, [sN]);
+
   const expandFolderNode = useCallback(async (folderId) => {
     const folder = nR.current.find(n => n.id === folderId);
     if(!folder || folder.type !== "asset-folder") return;
@@ -2493,6 +2775,9 @@ export default function CherryCanvas() {
             const isAI = nd.type.startsWith("ai-");
             const isSourceAsset = isSourceAssetType(nd.type);
             const isAssetFolder = nd.type === "asset-folder";
+            const isPanoramaBoard = nd.type === "panorama-board";
+            const isSceneBoard = nd.type === "scene-board";
+            const isStageBoard = isPanoramaBoard || isSceneBoard;
             const c = COLORS[m.color] || T.accent;
             const latestPlayableVideoResult = nd.type === "ai-video" ? [...(nd.results || [])].reverse().find(playableVideoUrlOf) : null;
             const latestPendingVideoResult = nd.type === "ai-video" ? [...(nd.results || [])].reverse().find(result => resultSubmitIdOf(result) && !resultFailed(result) && !playableVideoUrlOf(result)) : null;
@@ -2507,6 +2792,19 @@ export default function CherryCanvas() {
             const latestVideoSrc = latestVideoBaseUrl
               ? cacheBustedMediaUrl(latestVideoBaseUrl, resultSubmitIdOf(latestResult) || latestResult?.ts || latestVideoBaseUrl)
               : "";
+            const connectedStageImageUrl = isStageBoard ? (() => {
+              const edge = edges.find(item => item.targetId === nd.id);
+              const refNode = edge ? nodes.find(item => item.id === edge.sourceId) : null;
+              const refLatest = refNode?.results?.[refNode.results.length - 1];
+              return refNode?.type === "source-image" || refNode?.type === "ai-image"
+                ? (refNode.imageUrl || resultImageUrlOf(refLatest) || resultUrlOf(refLatest))
+                : "";
+            })() : "";
+            const stageImageUrl = isPanoramaBoard ? (nd.panoramaUrl || connectedStageImageUrl) : isSceneBoard ? (nd.sceneUrl || connectedStageImageUrl) : "";
+            const panoActors = isStageBoard ? normalizePanoramaActors(nd.actors) : [];
+            const panoOffset = isPanoramaBoard ? ((Number(nd.panoramaOffset) || 0) % 1 + 1) % 1 : 0;
+            const stageZoom = isPanoramaBoard ? clamp(Number(nd.panoramaZoom) || 1, 0.75, 1.8) : isSceneBoard ? clamp(Number(nd.sceneZoom) || 1, 0.75, 1.8) : 1;
+            const selectedPanoActor = isStageBoard ? panoActors.find(actor => actor.id === nd.selectedActorId) : null;
             const hasGeneratedMedia = nd.type === "ai-video" ? !!latestVideoBaseUrl : !!latestResultUrl;
             const showPendingVideo = nd.type === "ai-video" && !latestVideoBaseUrl && !!latestPendingVideoResult;
             const showGeneratedResult = !isSourceAsset && (hasGeneratedMedia || showPendingVideo) && (nd.genState === "done" || nd.genState === "generating");
@@ -2589,6 +2887,96 @@ export default function CherryCanvas() {
                       </>
                     )}
 
+                    {isStageBoard && (
+                      <>
+                        <Suspense fallback={<div data-interactive="1" style={{ flex: 1, minHeight: 230, borderRadius: 12, border: `1px solid ${T.border}`, display: "flex", alignItems: "center", justifyContent: "center", color: T.textMuted, background: `linear-gradient(135deg, ${c}22, rgba(0,0,0,0.32))` }}>3D 舞台加载中...</div>}>
+                          <Panorama3DStage
+                            mode={isPanoramaBoard ? "panorama" : "scene"}
+                            nodeId={nd.id}
+                            actors={panoActors}
+                            selectedActorId={nd.selectedActorId}
+                            imageUrl={stageImageUrl}
+                            panoramaOffset={panoOffset}
+                            panoramaZoom={stageZoom}
+                            accent={c}
+                            theme={T}
+                            onActorsChange={(nextActors)=>updatePanoramaActors(nd.id, nextActors)}
+                            onSelectActor={(actorId)=>uN(nd.id, { selectedActorId: actorId })}
+                            onOffsetChange={isPanoramaBoard ? (value)=>uN(nd.id, { panoramaOffset: value }) : undefined}
+                          />
+                        </Suspense>
+
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+                          <label data-interactive="1" className="gen-btn" style={{ justifyContent: "center", cursor: "pointer", background: `linear-gradient(135deg, ${c}, ${c}cc)` }}>
+                            <Icon name="image" size={13} c="white"/> {isPanoramaBoard ? "载入全景" : "载入场景"}
+                            <input type="file" accept="image/*" style={{ display: "none" }} onChange={e=>{ const f = e.target.files?.[0]; if(f) (isPanoramaBoard ? updatePanoramaImage : updateSceneImage)(nd.id, f); e.target.value = ""; }}/>
+                          </label>
+                          <button data-interactive="1" className="gen-btn" onClick={()=>isPanoramaBoard ? capturePanoramaBoard(nd.id) : captureSceneBoard(nd.id)} style={{ justifyContent: "center", background: "rgba(16,185,129,0.18)", color: "#34d399", border: "1px solid rgba(16,185,129,0.28)" }}>
+                            <Icon name="camera" size={13}/> 截图成素材
+                          </button>
+                          <button data-interactive="1" className="gen-btn" onClick={()=>{
+                            const actor = createPanoramaActor({ name: `角色${panoActors.length + 1}`, x: 0.5, y: 0.62, yaw: 0, color: c });
+                            uN(nd.id, { actors: [...panoActors, actor], selectedActorId: actor.id });
+                          }} style={{ justifyContent: "center", background: T.surface, color: T.text, border: `1px solid ${T.border}` }}>
+                            <Icon name="user" size={13}/> 加小人
+                          </button>
+                          <button data-interactive="1" className="gen-btn" onClick={()=>uN(nd.id, { actors: arrangePanoramaActors(6), selectedActorId: "" })} style={{ justifyContent: "center", background: T.surface, color: T.text, border: `1px solid ${T.border}` }}>
+                            <Icon name="grid" size={13}/> 一键阵列
+                          </button>
+                        </div>
+                        <div data-interactive="1" style={{ padding: 8, borderRadius: 10, border: `1px solid ${selectedPanoActor ? c : T.border}`, background: selectedPanoActor ? `${c}10` : "rgba(0,0,0,0.14)", display: "grid", gap: 7 }}>
+                          {selectedPanoActor ? (
+                            <>
+                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, fontSize: 11, color: T.text }}>
+                                <strong style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{selectedPanoActor.name}</strong>
+                                <button className="tb-mini danger" onClick={()=>deletePanoramaActor(nd.id, selectedPanoActor.id)} title="删除小人">
+                                  <Icon name="trash" size={12}/>
+                                </button>
+                              </div>
+                              <div style={{ display: "grid", gridTemplateColumns: "42px 1fr 42px", alignItems: "center", gap: 6, fontSize: 10, color: T.textDim }}>
+                                <span>大小</span>
+                                <input type="range" min="0.35" max="2.6" step="0.01" value={selectedPanoActor.scale} onChange={e=>patchPanoramaActor(nd.id, selectedPanoActor.id, { scale: Number(e.target.value) })}/>
+                                <span style={{ textAlign: "right" }}>{selectedPanoActor.scale.toFixed(2)}x</span>
+                              </div>
+                              <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6 }}>
+                                <button className="gen-btn" onClick={()=>patchPanoramaActor(nd.id, selectedPanoActor.id, { scale: clamp(selectedPanoActor.scale * 0.86, 0.35, 2.6) })} style={{ justifyContent: "center", background: T.surface, color: T.text, border: `1px solid ${T.border}` }}>
+                                  <Icon name="minus" size={12}/> 缩小
+                                </button>
+                                <button className="gen-btn" onClick={()=>patchPanoramaActor(nd.id, selectedPanoActor.id, { scale: clamp(selectedPanoActor.scale * 1.16, 0.35, 2.6) })} style={{ justifyContent: "center", background: T.surface, color: T.text, border: `1px solid ${T.border}` }}>
+                                  <Icon name="plus" size={12}/> 放大
+                                </button>
+                                <button className="gen-btn" onClick={()=>patchPanoramaActor(nd.id, selectedPanoActor.id, { yaw: (selectedPanoActor.yaw || 0) - Math.PI / 8 })} style={{ justifyContent: "center", background: T.surface, color: T.text, border: `1px solid ${T.border}` }}>
+                                  <Icon name="refresh" size={12}/> 左转
+                                </button>
+                                <button className="gen-btn" onClick={()=>patchPanoramaActor(nd.id, selectedPanoActor.id, { yaw: (selectedPanoActor.yaw || 0) + Math.PI / 8 })} style={{ justifyContent: "center", background: T.surface, color: T.text, border: `1px solid ${T.border}` }}>
+                                  <Icon name="refresh" size={12}/> 右转
+                                </button>
+                              </div>
+                              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+                                <button className="gen-btn" onClick={()=>patchPanoramaActor(nd.id, selectedPanoActor.id, { yaw: 0 })} style={{ justifyContent: "center", background: T.surface, color: T.text, border: `1px solid ${T.border}` }}>正面</button>
+                                <button className="gen-btn" onClick={()=>patchPanoramaActor(nd.id, selectedPanoActor.id, { yaw: Math.PI })} style={{ justifyContent: "center", background: T.surface, color: T.text, border: `1px solid ${T.border}` }}>背面</button>
+                              </div>
+                            </>
+                          ) : (
+                            <div style={{ fontSize: 11, color: T.textDim, textAlign: "center" }}>点一下 3D 小人，就能缩放、旋转和删除</div>
+                          )}
+                        </div>
+                        {isPanoramaBoard ? (
+                          <div style={{ display: "grid", gridTemplateColumns: "54px 1fr 54px 1fr", gap: 6, alignItems: "center", fontSize: 10, color: T.textDim }}>
+                            <span>视角</span>
+                            <input data-interactive="1" type="range" min="0" max="1" step="0.01" value={Number(nd.panoramaOffset) || 0} onChange={e=>uN(nd.id,{panoramaOffset:Number(e.target.value)})}/>
+                            <span>缩放</span>
+                            <input data-interactive="1" type="range" min="0.75" max="1.8" step="0.01" value={Number(nd.panoramaZoom) || 1} onChange={e=>uN(nd.id,{panoramaZoom:Number(e.target.value)})}/>
+                          </div>
+                        ) : (
+                          <div style={{ display: "grid", gridTemplateColumns: "54px 1fr", gap: 6, alignItems: "center", fontSize: 10, color: T.textDim }}>
+                            <span>背景</span>
+                            <input data-interactive="1" type="range" min="0.75" max="1.8" step="0.01" value={Number(nd.sceneZoom) || 1} onChange={e=>uN(nd.id,{sceneZoom:Number(e.target.value)})}/>
+                          </div>
+                        )}
+                      </>
+                    )}
+
                     {nd.type === "source-text" && (
                       <textarea
                         data-interactive="1"
@@ -2654,7 +3042,7 @@ export default function CherryCanvas() {
                     )}
 
                     {/* 预览区 */}
-                        {nd.type !== "comment-note" && !isAssetFolder && nd.type !== "source-text" && (
+                        {nd.type !== "comment-note" && !isAssetFolder && !isPanoramaBoard && nd.type !== "source-text" && (
                       <div data-node-drag="preview" data-interactive={latestVideoSrc && nd.type === "ai-video" ? "1" : undefined} style={{
                         flex: 1, minHeight: 60, borderRadius: 9, position: "relative",
                         background: "rgba(0,0,0,0.25)", border: `1px solid ${T.border}`,
@@ -2689,7 +3077,7 @@ export default function CherryCanvas() {
                           </>
                         )}
                         {nd.type === "source-video" && latestAssetUrl && (
-                          <video data-interactive="1" src={latestAssetUrl} controls playsInline preload="metadata" draggable={false} onPointerDown={e=>e.stopPropagation()} onMouseDown={e=>e.stopPropagation()} style={{ width: "100%", height: "100%", objectFit: "contain", background: "rgba(0,0,0,0.45)" }}/>
+                          <video data-interactive="1" data-video-node={nd.id} src={latestAssetUrl} controls playsInline preload="metadata" draggable={false} onPointerDown={e=>e.stopPropagation()} onMouseDown={e=>e.stopPropagation()} style={{ width: "100%", height: "100%", objectFit: "contain", background: "rgba(0,0,0,0.45)" }}/>
                         )}
                         {nd.type === "source-audio" && latestAssetUrl && (
                           <div style={{ width: "100%", height: "100%", padding: 18, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 14 }}>
@@ -2798,6 +3186,11 @@ export default function CherryCanvas() {
                         <button data-interactive="1" onClick={()=>downloadResult({ ...(nd.results?.[nd.results.length-1] || {}), assetId: nd.assetId, fileName: nd.fileName, text: nd.text || nd.prompt || nd.results?.[nd.results.length-1]?.text }, nd.type)} className="gen-btn" style={{ flex: 1, justifyContent: "center" }}>
                           <Icon name="download" size={13}/> 下载素材
                         </button>
+                        {nd.type === "source-video" && (
+                          <button data-interactive="1" onClick={()=>captureVideoNodeFrame(nd.id)} className="gen-btn-icon" title="抽当前帧为素材图">
+                            <Icon name="camera" size={13}/>
+                          </button>
+                        )}
                       </div>
                     )}
                   </div>
@@ -2857,7 +3250,7 @@ export default function CherryCanvas() {
                       <div style={{ flex: 1, textAlign: "left" }}>
                         <div style={{ fontSize: 12, fontWeight: 600, color: T.text }}>{m_.label}</div>
                         <div style={{ fontSize: 10, color: T.textDim, marginTop: 2 }}>
-                          {t==="ai-image" ? "文生图 / 图生图" : t==="ai-text" ? "对话补全 / 流式输出" : t==="ai-video" ? "文生视频 / 图生视频" : t==="ai-audio" ? "语音合成 / TTS" : t==="source-image" ? "上传图片素材" : t==="source-video" ? "视频素材引用" : t==="source-audio" ? "音频素材引用" : t==="source-text" ? "文本素材引用" : t==="asset-folder" ? "拖入文件夹后自动生成" : "标记备注"}
+                          {t==="ai-image" ? "文生图 / 图生图" : t==="ai-text" ? "对话补全 / 流式输出" : t==="ai-video" ? "文生视频 / 图生视频" : t==="ai-audio" ? "语音合成 / TTS" : t==="source-image" ? "上传图片素材" : t==="source-video" ? "视频素材引用" : t==="source-audio" ? "音频素材引用" : t==="source-text" ? "文本素材引用" : t==="asset-folder" ? "拖入文件夹后自动生成" : t==="panorama-board" ? "2:1 全景转视角 + 3D 小人" : t==="scene-board" ? "普通图片背景 + 3D 小人" : "标记备注"}
                         </div>
                       </div>
                     </button>
