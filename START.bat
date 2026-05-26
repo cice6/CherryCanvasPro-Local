@@ -27,5 +27,6 @@ if errorlevel 1 (
 
 echo Starting Cherry Canvas Pro...
 echo Open http://127.0.0.1:5174/ in your browser.
+start "" http://127.0.0.1:5174/
 call npm start
 pause
