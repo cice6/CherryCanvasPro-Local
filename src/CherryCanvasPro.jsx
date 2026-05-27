@@ -29,6 +29,10 @@ const Panorama3DStage = lazy(() => import("./Panorama3DStage.jsx"));
 
 const GRID = 24, MIN_Z = 0.1, MAX_Z = 4;
 const clamp = (v,a,b) => Math.min(Math.max(v,a),b);
+const numberOr = (value, fallback) => {
+  const next = Number(value);
+  return Number.isFinite(next) ? next : fallback;
+};
 const snap = (v,g) => Math.round(v/g)*g;
 const uid = () => "n_" + Math.random().toString(36).slice(2,8) + Date.now().toString(36).slice(-4);
 const s2c = (sx,sy,vp) => ({x:(sx-vp.x)/vp.z, y:(sy-vp.y)/vp.z});
@@ -137,6 +141,23 @@ const formatBytes = (bytes=0) => {
   const units = ["B", "KB", "MB", "GB"];
   const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
   return `${(bytes / 1024 ** i).toFixed(i ? 1 : 0)} ${units[i]}`;
+};
+const dataUrlByteSize = (dataUrl = "") => {
+  const raw = String(dataUrl || "");
+  const comma = raw.indexOf(",");
+  if(comma < 0) return 0;
+  const header = raw.slice(0, comma).toLowerCase();
+  const body = raw.slice(comma + 1).replace(/\s/g, "");
+  if(!body) return 0;
+  if(header.includes(";base64")){
+    const padding = body.endsWith("==") ? 2 : body.endsWith("=") ? 1 : 0;
+    return Math.max(0, Math.floor(body.length * 3 / 4) - padding);
+  }
+  try {
+    return new Blob([decodeURIComponent(body)]).size;
+  } catch {
+    return new Blob([body]).size;
+  }
 };
 const assetKindLabel = (kind = "") => ({ image: "图片", video: "视频", audio: "音频", text: "文本" })[kind] || "文件";
 const assetKindIcon = (kind = "") => ({ image: "image", video: "video", audio: "audio", text: "text" })[kind] || "note";
@@ -611,11 +632,27 @@ const normalizeCanvasNode = (node = {}) => {
     };
   }
   if(node.type === "scene-board"){
+    const aspect = sceneAspectOf(node.sceneAspect);
+    const width = Number(node.w);
+    const height = Number(node.h);
+    const scale = clamp(
+      Number.isFinite(width) && width > 0
+        ? width / aspect.w
+        : Number.isFinite(height) && height > 0
+          ? height / aspect.h
+          : 1,
+      SCENE_BOARD_SCALE_MIN,
+      SCENE_BOARD_SCALE_MAX
+    );
     return {
       ...node,
       name: !node.name ? "普通场景图" : node.name,
-      w: Math.max(Number(node.w) || 0, 580),
-      h: Math.max(Number(node.h) || 0, 600),
+      sceneAspect: aspect.key,
+      w: Math.round(aspect.w * scale),
+      h: Math.round(aspect.h * scale),
+      sceneZoom: clamp(numberOr(node.sceneZoom, 1), 0.25, 3.2),
+      sceneOffsetX: clamp(numberOr(node.sceneOffsetX, 0.5), 0, 1),
+      sceneOffsetY: clamp(numberOr(node.sceneOffsetY, 0.5), 0, 1),
     };
   }
   return node;
@@ -770,6 +807,14 @@ const readResponsePath = (data, path) => {
 
 const RATIOS = [{l:"1:1"},{l:"9:16"},{l:"16:9"},{l:"3:4"},{l:"4:3"},{l:"3:2"},{l:"2:3"}];
 const VIDEO_DURATIONS = Array.from({ length: 12 }, (_, i) => i + 4);
+const SCENE_ASPECTS = [
+  { key: "16:9", label: "16:9", ratio: 16 / 9, w: 720, h: 780, outW: 1920, outH: 1080 },
+  { key: "21:9", label: "21:9", ratio: 21 / 9, w: 920, h: 780, outW: 2560, outH: 1080 },
+  { key: "9:16", label: "9:16", ratio: 9 / 16, w: 460, h: 1180, outW: 1080, outH: 1920 },
+];
+const sceneAspectOf = (key) => SCENE_ASPECTS.find(item => item.key === key) || SCENE_ASPECTS[0];
+const SCENE_BOARD_SCALE_MIN = 0.6;
+const SCENE_BOARD_SCALE_MAX = 1.8;
 
 // 节点尺寸增大
 const NTYPES = {
@@ -783,7 +828,7 @@ const NTYPES = {
   "source-text": { label: "文本素材", icon: "text", w: 340, h: 280, color: "blue" },
   "asset-folder": { label: "文件夹", icon: "folder", w: 360, h: 420, color: "gold" },
   "panorama-board": { label: "360全景图", icon: "panorama", w: 580, h: 640, color: "cyan" },
-  "scene-board": { label: "普通场景图", icon: "image", w: 580, h: 600, color: "green" },
+  "scene-board": { label: "普通场景图", icon: "image", w: 720, h: 780, color: "green" },
   "comment-note": { label: "便签", icon: "note", w: 300, h: 220, color: "gold" },
 };
 
@@ -812,7 +857,7 @@ const mkNode = (type, x, y, extra={}) => {
     : type==="source-text" ? { text: "", fileName: "", fileSize: 0, mimeType: "text/plain" }
     : type==="asset-folder" ? { files: [], counts: {}, expanded: false, expandedNodeIds: [] }
     : type==="panorama-board" ? { panoramaUrl: "", panoramaAssetId: "", panoramaOffset: 0, panoramaZoom: 1, actors: DEFAULT_PANORAMA_ACTORS }
-    : type==="scene-board" ? { sceneUrl: "", sceneAssetId: "", sceneZoom: 1, actors: DEFAULT_PANORAMA_ACTORS }
+    : type==="scene-board" ? { sceneUrl: "", sceneAssetId: "", sceneAspect: "16:9", sceneZoom: 1, sceneOffsetX: 0.5, sceneOffsetY: 0.5, actors: DEFAULT_PANORAMA_ACTORS }
     : {};
   return {
     id: uid(), type, x, y, w: m.w, h: m.h, name: m.label, prompt: "",
@@ -1774,13 +1819,14 @@ export default function CherryCanvas() {
     const assetId = `asset_${uid()}`;
     const safeName = name || "截图素材";
     const safeFileName = fileName || `${safeName}.png`;
+    const fileSize = dataUrlByteSize(dataUrl);
     const thumbUrl = await createImageThumbnail(dataUrl);
     await putAsset({
       id: assetId,
       dataUrl,
       thumbUrl,
       fileName: safeFileName,
-      fileSize: 0,
+      fileSize,
       mimeType: "image/png",
       updatedAt: Date.now(),
     });
@@ -1795,10 +1841,10 @@ export default function CherryCanvas() {
       assetId,
       imageUrl: thumbUrl || dataUrl,
       fileName: safeFileName,
-      fileSize: 0,
+      fileSize,
       mimeType: "image/png",
       genState: "done",
-      results: [{ id: uid(), ts: Date.now(), url: thumbUrl || dataUrl, fileName: safeFileName, assetId, data: { mimeType: "image/png" } }],
+      results: [{ id: uid(), ts: Date.now(), url: thumbUrl || dataUrl, fileName: safeFileName, assetId, data: { mimeType: "image/png", fileSize } }],
     });
     push([...nR.current, node], eR.current);
     setSel(new Set([node.id]));
@@ -1848,6 +1894,9 @@ export default function CherryCanvas() {
         sceneUrl: dataUrl,
         sceneAssetId: assetId,
         sceneFileName: file.name,
+        sceneZoom: 1,
+        sceneOffsetX: 0.5,
+        sceneOffsetY: 0.5,
       });
       toastFn("普通场景图已载入", "success");
     } catch(err) {
@@ -1924,12 +1973,15 @@ export default function CherryCanvas() {
     if(!node || node.type !== "scene-board") return;
     try {
       const sceneUrl = await getSceneImageForCapture(node);
+      const aspect = sceneAspectOf(node.sceneAspect);
       const dataUrl = await renderSceneBoardToDataUrl({
         sceneUrl,
         actors: node.actors,
-        width: Math.max(960, Math.round((node.w || 580) * 2)),
-        height: Math.max(540, Math.round((node.h || 600) * 1.22)),
+        width: aspect.outW,
+        height: aspect.outH,
         zoom: node.sceneZoom,
+        offsetX: node.sceneOffsetX,
+        offsetY: node.sceneOffsetY,
       });
       await addDataUrlSourceImage({
         dataUrl,
@@ -1937,8 +1989,8 @@ export default function CherryCanvas() {
         fileName: `${node.name || "scene"}_${Date.now()}.png`,
         x: node.x + node.w + 48,
         y: node.y,
-        width: Math.max(960, Math.round((node.w || 580) * 2)),
-        height: Math.max(540, Math.round((node.h || 600) * 1.22)),
+        width: aspect.outW,
+        height: aspect.outH,
       });
       toastFn("已截图为素材图，可继续接入工作流", "success");
     } catch(err) {
@@ -1946,18 +1998,18 @@ export default function CherryCanvas() {
     }
   }, [addDataUrlSourceImage, getSceneImageForCapture, toastFn]);
 
-  const captureVideoNodeFrame = useCallback(async (nodeId) => {
-    const node = nR.current.find(n => n.id === nodeId);
-    if(!node || node.type !== "source-video") return;
+  const captureVideoFrameToSource = useCallback(async ({ video, name = "视频", fileNameBase = "video", nodeId = "" } = {}) => {
     try {
-      const video = document.querySelector(`video[data-video-node="${nodeId}"]`);
       const frame = await captureVideoFrame(video);
+      const node = nodeId ? nR.current.find(n => n.id === nodeId) : null;
+      const fallbackX = wrap.current ? (-vpR.current.x / vpR.current.z) + 80 : 80;
+      const fallbackY = wrap.current ? (-vpR.current.y / vpR.current.z) + 80 : 80;
       await addDataUrlSourceImage({
         dataUrl: frame.dataUrl,
-        name: `${stripFileExt(node.name || node.fileName || "视频")} ${frame.time.toFixed(2)}s`,
-        fileName: `${stripFileExt(node.fileName || node.name || "video")}_frame_${Math.round(frame.time * 1000)}.png`,
-        x: node.x + node.w + 44,
-        y: node.y,
+        name: `${stripFileExt(name)} ${frame.time.toFixed(2)}s`,
+        fileName: `${stripFileExt(fileNameBase || name || "video")}_frame_${Math.round(frame.time * 1000)}.png`,
+        x: node ? node.x + node.w + 44 : fallbackX,
+        y: node ? node.y : fallbackY,
         width: frame.width,
         height: frame.height,
       });
@@ -1966,6 +2018,27 @@ export default function CherryCanvas() {
       toastFn(err.message || "抽帧失败：请先让视频加载并停在想要的画面", "error");
     }
   }, [addDataUrlSourceImage, toastFn]);
+
+  const captureVideoNodeFrame = useCallback(async (nodeId) => {
+    const node = nR.current.find(n => n.id === nodeId);
+    if(!node || node.type !== "source-video") return;
+    await captureVideoFrameToSource({
+      video: document.querySelector(`video[data-video-node="${nodeId}"]`),
+      name: node.name || node.fileName || "视频",
+      fileNameBase: node.fileName || node.name || "video",
+      nodeId,
+    });
+  }, [captureVideoFrameToSource]);
+
+  const captureVideoPlayerFrame = useCallback(async () => {
+    if(!showVideoPlayer?.url) return;
+    await captureVideoFrameToSource({
+      video: document.querySelector('video[data-video-player="modal"]'),
+      name: showVideoPlayer.name || "视频",
+      fileNameBase: showVideoPlayer.fileName || showVideoPlayer.name || "video",
+      nodeId: showVideoPlayer.nodeId || "",
+    });
+  }, [captureVideoFrameToSource, showVideoPlayer]);
 
   const onCanvasDragOver = useCallback((e) => {
     if(hasFileDrag(e.dataTransfer)){
@@ -2469,6 +2542,25 @@ export default function CherryCanvas() {
     }));
   }, [sN]);
 
+  const applySceneAspect = useCallback((nodeId, aspectKey) => {
+    const aspect = sceneAspectOf(aspectKey);
+    sN(ns => ns.map(n => n.id === nodeId && n.type === "scene-board"
+      ? (() => {
+          const currentAspect = sceneAspectOf(n.sceneAspect);
+          const scale = clamp((Number(n.w) || currentAspect.w) / currentAspect.w, SCENE_BOARD_SCALE_MIN, SCENE_BOARD_SCALE_MAX);
+          return { ...n, sceneAspect: aspect.key, w: Math.round(aspect.w * scale), h: Math.round(aspect.h * scale) };
+        })()
+      : n
+    ));
+  }, [sN]);
+
+  const scaleSceneImage = useCallback((nodeId, factor) => {
+    sN(ns => ns.map(n => {
+      if(n.id !== nodeId || n.type !== "scene-board") return n;
+      return { ...n, sceneZoom: clamp(numberOr(n.sceneZoom, 1) * factor, 0.25, 3.2) };
+    }));
+  }, [sN]);
+
   const expandFolderNode = useCallback(async (folderId) => {
     const folder = nR.current.find(n => n.id === folderId);
     if(!folder || folder.type !== "asset-folder") return;
@@ -2803,8 +2895,16 @@ export default function CherryCanvas() {
             const stageImageUrl = isPanoramaBoard ? (nd.panoramaUrl || connectedStageImageUrl) : isSceneBoard ? (nd.sceneUrl || connectedStageImageUrl) : "";
             const panoActors = isStageBoard ? normalizePanoramaActors(nd.actors) : [];
             const panoOffset = isPanoramaBoard ? ((Number(nd.panoramaOffset) || 0) % 1 + 1) % 1 : 0;
-            const stageZoom = isPanoramaBoard ? clamp(Number(nd.panoramaZoom) || 1, 0.75, 1.8) : isSceneBoard ? clamp(Number(nd.sceneZoom) || 1, 0.75, 1.8) : 1;
+            const stageZoom = isPanoramaBoard
+              ? clamp(numberOr(nd.panoramaZoom, 1), 0.75, 1.8)
+              : isSceneBoard
+                ? clamp(numberOr(nd.sceneZoom, 1), 0.25, 3.2)
+                : 1;
+            const sceneAspect = isSceneBoard ? sceneAspectOf(nd.sceneAspect) : SCENE_ASPECTS[0];
+            const sceneOffsetX = isSceneBoard ? clamp(numberOr(nd.sceneOffsetX, 0.5), 0, 1) : 0.5;
+            const sceneOffsetY = isSceneBoard ? clamp(numberOr(nd.sceneOffsetY, 0.5), 0, 1) : 0.5;
             const selectedPanoActor = isStageBoard ? panoActors.find(actor => actor.id === nd.selectedActorId) : null;
+            const editablePanoActor = selectedPanoActor || (isStageBoard && panoActors.length ? panoActors[panoActors.length - 1] : null);
             const hasGeneratedMedia = nd.type === "ai-video" ? !!latestVideoBaseUrl : !!latestResultUrl;
             const showPendingVideo = nd.type === "ai-video" && !latestVideoBaseUrl && !!latestPendingVideoResult;
             const showGeneratedResult = !isSourceAsset && (hasGeneratedMedia || showPendingVideo) && (nd.genState === "done" || nd.genState === "generating");
@@ -2898,11 +2998,15 @@ export default function CherryCanvas() {
                             imageUrl={stageImageUrl}
                             panoramaOffset={panoOffset}
                             panoramaZoom={stageZoom}
+                            sceneOffsetX={sceneOffsetX}
+                            sceneOffsetY={sceneOffsetY}
+                            stageAspectRatio={isSceneBoard ? sceneAspect.ratio : undefined}
                             accent={c}
                             theme={T}
                             onActorsChange={(nextActors)=>updatePanoramaActors(nd.id, nextActors)}
                             onSelectActor={(actorId)=>uN(nd.id, { selectedActorId: actorId })}
                             onOffsetChange={isPanoramaBoard ? (value)=>uN(nd.id, { panoramaOffset: value }) : undefined}
+                            onSceneViewChange={isSceneBoard ? (view)=>uN(nd.id, { sceneOffsetX: view.x, sceneOffsetY: view.y }) : undefined}
                           />
                         </Suspense>
 
@@ -2924,37 +3028,75 @@ export default function CherryCanvas() {
                             <Icon name="grid" size={13}/> 一键阵列
                           </button>
                         </div>
-                        <div data-interactive="1" style={{ padding: 8, borderRadius: 10, border: `1px solid ${selectedPanoActor ? c : T.border}`, background: selectedPanoActor ? `${c}10` : "rgba(0,0,0,0.14)", display: "grid", gap: 7 }}>
-                          {selectedPanoActor ? (
+                        {isSceneBoard && (
+                          <>
+                            <div data-interactive="1" style={{ display: "grid", gridTemplateColumns: "42px repeat(3, 1fr)", gap: 6, alignItems: "center", fontSize: 10, color: T.textDim }}>
+                              <span>尺寸</span>
+                              {SCENE_ASPECTS.map(aspect => {
+                                const active = sceneAspect.key === aspect.key;
+                                return (
+                                  <button key={aspect.key} className="gen-btn" onClick={()=>applySceneAspect(nd.id, aspect.key)} style={{ justifyContent: "center", padding: "7px 9px", background: active ? `${c}22` : T.surface, color: active ? c : T.text, border: `1px solid ${active ? c : T.border}` }}>
+                                    {aspect.label}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                            <div data-interactive="1" style={{ display: "grid", gridTemplateColumns: "52px 1fr 54px 1fr", gap: 6, alignItems: "center", fontSize: 10, color: T.textDim }}>
+                              <span>场景图</span>
+                              <button className="gen-btn" onClick={()=>scaleSceneImage(nd.id, 0.86)} style={{ justifyContent: "center", padding: "7px 9px", background: T.surface, color: T.text, border: `1px solid ${T.border}` }}>
+                                <Icon name="minus" size={12}/> 缩小
+                              </button>
+                              <span style={{ textAlign: "center", color: T.text, fontWeight: 700 }}>{Math.round(stageZoom * 100)}%</span>
+                              <button className="gen-btn" onClick={()=>scaleSceneImage(nd.id, 1.16)} style={{ justifyContent: "center", padding: "7px 9px", background: T.surface, color: T.text, border: `1px solid ${T.border}` }}>
+                                <Icon name="plus" size={12}/> 放大
+                              </button>
+                            </div>
+                          </>
+                        )}
+                        <div data-interactive="1" style={{ padding: 8, borderRadius: 10, border: `1px solid ${editablePanoActor ? c : T.border}`, background: editablePanoActor ? `${c}10` : "rgba(0,0,0,0.14)", display: "grid", gap: 7 }}>
+                          {editablePanoActor ? (
                             <>
                               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, fontSize: 11, color: T.text }}>
-                                <strong style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{selectedPanoActor.name}</strong>
-                                <button className="tb-mini danger" onClick={()=>deletePanoramaActor(nd.id, selectedPanoActor.id)} title="删除小人">
+                                <strong style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{editablePanoActor.name}</strong>
+                                <button className="tb-mini danger" onClick={()=>deletePanoramaActor(nd.id, editablePanoActor.id)} title="删除小人">
                                   <Icon name="trash" size={12}/>
                                 </button>
                               </div>
                               <div style={{ display: "grid", gridTemplateColumns: "42px 1fr 42px", alignItems: "center", gap: 6, fontSize: 10, color: T.textDim }}>
                                 <span>大小</span>
-                                <input type="range" min="0.35" max="2.6" step="0.01" value={selectedPanoActor.scale} onChange={e=>patchPanoramaActor(nd.id, selectedPanoActor.id, { scale: Number(e.target.value) })}/>
-                                <span style={{ textAlign: "right" }}>{selectedPanoActor.scale.toFixed(2)}x</span>
+                                <input type="range" min="0.35" max="2.6" step="0.01" value={editablePanoActor.scale} onChange={e=>patchPanoramaActor(nd.id, editablePanoActor.id, { scale: Number(e.target.value) })}/>
+                                <span style={{ textAlign: "right" }}>{editablePanoActor.scale.toFixed(2)}x</span>
                               </div>
                               <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6 }}>
-                                <button className="gen-btn" onClick={()=>patchPanoramaActor(nd.id, selectedPanoActor.id, { scale: clamp(selectedPanoActor.scale * 0.86, 0.35, 2.6) })} style={{ justifyContent: "center", background: T.surface, color: T.text, border: `1px solid ${T.border}` }}>
+                                <button className="gen-btn" onClick={()=>patchPanoramaActor(nd.id, editablePanoActor.id, { scale: clamp(editablePanoActor.scale * 0.86, 0.35, 2.6) })} style={{ justifyContent: "center", background: T.surface, color: T.text, border: `1px solid ${T.border}` }}>
                                   <Icon name="minus" size={12}/> 缩小
                                 </button>
-                                <button className="gen-btn" onClick={()=>patchPanoramaActor(nd.id, selectedPanoActor.id, { scale: clamp(selectedPanoActor.scale * 1.16, 0.35, 2.6) })} style={{ justifyContent: "center", background: T.surface, color: T.text, border: `1px solid ${T.border}` }}>
+                                <button className="gen-btn" onClick={()=>patchPanoramaActor(nd.id, editablePanoActor.id, { scale: clamp(editablePanoActor.scale * 1.16, 0.35, 2.6) })} style={{ justifyContent: "center", background: T.surface, color: T.text, border: `1px solid ${T.border}` }}>
                                   <Icon name="plus" size={12}/> 放大
                                 </button>
-                                <button className="gen-btn" onClick={()=>patchPanoramaActor(nd.id, selectedPanoActor.id, { yaw: (selectedPanoActor.yaw || 0) - Math.PI / 8 })} style={{ justifyContent: "center", background: T.surface, color: T.text, border: `1px solid ${T.border}` }}>
+                                <button className="gen-btn" onClick={()=>patchPanoramaActor(nd.id, editablePanoActor.id, { yaw: (editablePanoActor.yaw || 0) - Math.PI / 8 })} style={{ justifyContent: "center", background: T.surface, color: T.text, border: `1px solid ${T.border}` }}>
                                   <Icon name="refresh" size={12}/> 左转
                                 </button>
-                                <button className="gen-btn" onClick={()=>patchPanoramaActor(nd.id, selectedPanoActor.id, { yaw: (selectedPanoActor.yaw || 0) + Math.PI / 8 })} style={{ justifyContent: "center", background: T.surface, color: T.text, border: `1px solid ${T.border}` }}>
+                                <button className="gen-btn" onClick={()=>patchPanoramaActor(nd.id, editablePanoActor.id, { yaw: (editablePanoActor.yaw || 0) + Math.PI / 8 })} style={{ justifyContent: "center", background: T.surface, color: T.text, border: `1px solid ${T.border}` }}>
                                   <Icon name="refresh" size={12}/> 右转
                                 </button>
                               </div>
                               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
-                                <button className="gen-btn" onClick={()=>patchPanoramaActor(nd.id, selectedPanoActor.id, { yaw: 0 })} style={{ justifyContent: "center", background: T.surface, color: T.text, border: `1px solid ${T.border}` }}>正面</button>
-                                <button className="gen-btn" onClick={()=>patchPanoramaActor(nd.id, selectedPanoActor.id, { yaw: Math.PI })} style={{ justifyContent: "center", background: T.surface, color: T.text, border: `1px solid ${T.border}` }}>背面</button>
+                                <button className="gen-btn" onClick={()=>patchPanoramaActor(nd.id, editablePanoActor.id, { yaw: 0 })} style={{ justifyContent: "center", background: T.surface, color: T.text, border: `1px solid ${T.border}` }}>正面</button>
+                                <button className="gen-btn" onClick={()=>patchPanoramaActor(nd.id, editablePanoActor.id, { yaw: Math.PI })} style={{ justifyContent: "center", background: T.surface, color: T.text, border: `1px solid ${T.border}` }}>背面</button>
+                              </div>
+                              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+                                {[
+                                  { key: "standing", label: "站姿" },
+                                  { key: "sitting", label: "坐姿" },
+                                ].map(pose => {
+                                  const active = (editablePanoActor.pose || "standing") === pose.key;
+                                  return (
+                                    <button key={pose.key} className="gen-btn" onClick={()=>patchPanoramaActor(nd.id, editablePanoActor.id, { pose: pose.key })} style={{ justifyContent: "center", background: active ? `${c}22` : T.surface, color: active ? c : T.text, border: `1px solid ${active ? c : T.border}` }}>
+                                      {pose.label}
+                                    </button>
+                                  );
+                                })}
                               </div>
                             </>
                           ) : (
@@ -2969,9 +3111,16 @@ export default function CherryCanvas() {
                             <input data-interactive="1" type="range" min="0.75" max="1.8" step="0.01" value={Number(nd.panoramaZoom) || 1} onChange={e=>uN(nd.id,{panoramaZoom:Number(e.target.value)})}/>
                           </div>
                         ) : (
-                          <div style={{ display: "grid", gridTemplateColumns: "54px 1fr", gap: 6, alignItems: "center", fontSize: 10, color: T.textDim }}>
-                            <span>背景</span>
-                            <input data-interactive="1" type="range" min="0.75" max="1.8" step="0.01" value={Number(nd.sceneZoom) || 1} onChange={e=>uN(nd.id,{sceneZoom:Number(e.target.value)})}/>
+                          <div style={{ display: "grid", gridTemplateColumns: "42px 1fr 42px 1fr", gap: 6, alignItems: "center", fontSize: 10, color: T.textDim }}>
+                            <span>缩放</span>
+                            <input data-interactive="1" type="range" min="0.25" max="3.2" step="0.01" value={stageZoom} onChange={e=>uN(nd.id,{sceneZoom:Number(e.target.value)})}/>
+                            <span>左右</span>
+                            <input data-interactive="1" type="range" min="0" max="1" step="0.01" value={sceneOffsetX} onChange={e=>uN(nd.id,{sceneOffsetX:Number(e.target.value)})}/>
+                            <span>上下</span>
+                            <input data-interactive="1" type="range" min="0" max="1" step="0.01" value={sceneOffsetY} onChange={e=>uN(nd.id,{sceneOffsetY:Number(e.target.value)})}/>
+                            <button data-interactive="1" className="gen-btn" onClick={()=>uN(nd.id,{sceneZoom:1, sceneOffsetX:0.5, sceneOffsetY:0.5})} style={{ gridColumn: "span 2", justifyContent: "center", padding: "7px 9px", background: T.surface, color: T.text, border: `1px solid ${T.border}` }}>
+                              居中原图
+                            </button>
                           </div>
                         )}
                       </>
@@ -3042,7 +3191,7 @@ export default function CherryCanvas() {
                     )}
 
                     {/* 预览区 */}
-                        {nd.type !== "comment-note" && !isAssetFolder && !isPanoramaBoard && nd.type !== "source-text" && (
+                        {nd.type !== "comment-note" && !isAssetFolder && !isStageBoard && nd.type !== "source-text" && (
                       <div data-node-drag="preview" data-interactive={latestVideoSrc && nd.type === "ai-video" ? "1" : undefined} style={{
                         flex: 1, minHeight: 60, borderRadius: 9, position: "relative",
                         background: "rgba(0,0,0,0.25)", border: `1px solid ${T.border}`,
@@ -3051,7 +3200,7 @@ export default function CherryCanvas() {
                       }} onClick={(e)=>{
                         if(nd.results.length > 0){
                           e.stopPropagation();
-                          if(nd.type === "ai-video" && latestVideoSrc) setShowVideoPlayer({ url: latestVideoSrc, poster: latestResultPoster, name: nd.name });
+                          if(nd.type === "ai-video" && latestVideoSrc) setShowVideoPlayer({ url: latestVideoSrc, poster: latestResultPoster, name: nd.name, fileName: latestResult?.fileName || nd.name, nodeId: nd.id });
                           else setShowPreview({nodeType: nd.type, results: nd.results, name: nd.name});
                         }
                       }}>
@@ -3109,7 +3258,7 @@ export default function CherryCanvas() {
                                   data-interactive="1"
                                   onPointerDown={e=>e.stopPropagation()}
                                   onMouseDown={e=>e.stopPropagation()}
-                                  onClick={e=>{ e.stopPropagation(); setShowVideoPlayer({ url: latestVideoSrc, poster: latestResultPoster, name: nd.name }); }}
+                                  onClick={e=>{ e.stopPropagation(); setShowVideoPlayer({ url: latestVideoSrc, poster: latestResultPoster, name: nd.name, fileName: latestResult?.fileName || nd.name, nodeId: nd.id }); }}
                                   style={{ width: "100%", height: "100%", border: "none", padding: 0, margin: 0, cursor: "pointer", position: "relative", overflow: "hidden", background: "rgba(0,0,0,0.45)" }}
                                 >
                                   {latestResultPoster ? <img src={latestResultPoster} alt={nd.name} draggable={false} onDragStart={e=>e.preventDefault()} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block", opacity: 0.92 }}/> : <Icon name="video" size={34} c={c}/>}
@@ -3769,21 +3918,35 @@ export default function CherryCanvas() {
             <div className="modal-header">
               <h2 style={{ fontSize: 16, fontWeight: 700 }}>{showVideoPlayer.name || "视频预览"}</h2>
               <div style={{ display: "flex", gap: 8 }}>
+                <button className="btn-ghost" onClick={captureVideoPlayerFrame}><Icon name="camera" size={12}/> 截当前帧</button>
                 <button className="btn-ghost" onClick={()=>window.open(showVideoPlayer.url, "_blank", "noopener,noreferrer")}>新窗口播放</button>
                 <button className="btn-icon" onClick={()=>setShowVideoPlayer(null)}><Icon name="x" size={14}/></button>
               </div>
             </div>
             <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12 }}>
-              <iframe
+              <video
                 key={showVideoPlayer.url}
+                data-interactive="1"
+                data-video-player="modal"
                 src={showVideoPlayer.url}
-                title={showVideoPlayer.name || "video"}
-                allow="autoplay; fullscreen"
-                style={{ width: "100%", height: "min(70vh, 520px)", display: "block", background: "black", border: "none", borderRadius: 10 }}
+                poster={showVideoPlayer.poster || undefined}
+                controls
+                playsInline
+                crossOrigin="anonymous"
+                preload="auto"
+                draggable={false}
+                onPointerDown={e=>e.stopPropagation()}
+                onMouseDown={e=>e.stopPropagation()}
+                style={{ width: "100%", height: "min(70vh, 520px)", display: "block", objectFit: "contain", background: "black", border: "none", borderRadius: 10 }}
               />
-              <a href={showVideoPlayer.url} target="_blank" rel="noreferrer" className="btn-primary" style={{ justifyContent: "center", textDecoration: "none" }}>
-                新窗口播放
-              </a>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                <button className="btn-primary" style={{ justifyContent: "center" }} onClick={captureVideoPlayerFrame}>
+                  <Icon name="camera" size={13}/> 截当前帧为素材图
+                </button>
+                <a href={showVideoPlayer.url} target="_blank" rel="noreferrer" className="btn-primary" style={{ justifyContent: "center", textDecoration: "none" }}>
+                  新窗口播放
+                </a>
+              </div>
             </div>
           </div>
         </div>

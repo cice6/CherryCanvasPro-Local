@@ -2,6 +2,10 @@ import { useCallback, useEffect, useRef } from "react";
 import * as THREE from "three";
 
 const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+const numberOr = (value, fallback) => {
+  const next = Number(value);
+  return Number.isFinite(next) ? next : fallback;
+};
 const FRONT_VECTOR = new THREE.Vector3(0, 1, 0);
 
 function makeTextSprite(text, color = "#ffffff") {
@@ -52,6 +56,7 @@ function markActorObject(object, actorId) {
 function makeActorMesh(actor, selected) {
   const color = new THREE.Color(actor.color || "#3b82f6");
   const darker = color.clone().multiplyScalar(0.46);
+  const isSitting = actor.pose === "sitting";
   const mainMat = new THREE.MeshStandardMaterial({ color, roughness: 0.62, metalness: 0.05 });
   const sideMat = new THREE.MeshStandardMaterial({ color: color.clone().lerp(new THREE.Color("#ffffff"), 0.18), roughness: 0.54 });
   const backMat = new THREE.MeshStandardMaterial({ color: darker, roughness: 0.72 });
@@ -63,37 +68,49 @@ function makeActorMesh(actor, selected) {
   group.userData.actorId = actor.id;
 
   const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.23, 0.55, 8, 18), mainMat);
-  torso.position.set(0, 0.86, 0);
-  torso.scale.set(1.02, 1.18, 0.72);
+  torso.position.set(0, isSitting ? 0.67 : 0.86, 0);
+  torso.scale.set(1.02, isSitting ? 1.05 : 1.18, 0.72);
   group.add(torso);
 
   const head = new THREE.Mesh(new THREE.SphereGeometry(0.2, 24, 16), sideMat);
-  head.position.set(0, 1.46, 0);
+  head.position.set(0, isSitting ? 1.2 : 1.46, 0);
   group.add(head);
 
   const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.1, 0.16, 14), mainMat);
-  neck.position.set(0, 1.24, 0);
+  neck.position.set(0, isSitting ? 1.0 : 1.24, 0);
   group.add(neck);
 
-  group.add(limbBetween([-0.22, 1.12, 0], [-0.48, 0.66, 0.08], 0.065, mainMat));
-  group.add(limbBetween([0.22, 1.12, 0], [0.48, 0.66, 0.08], 0.065, mainMat));
-  group.add(limbBetween([-0.12, 0.45, 0], [-0.24, 0.02, 0.05], 0.075, mainMat));
-  group.add(limbBetween([0.12, 0.45, 0], [0.24, 0.02, 0.05], 0.075, mainMat));
+  if(isSitting) {
+    group.add(limbBetween([-0.22, 0.9, 0], [-0.46, 0.5, 0.08], 0.065, mainMat));
+    group.add(limbBetween([0.22, 0.9, 0], [0.46, 0.5, 0.08], 0.065, mainMat));
+    group.add(limbBetween([-0.15, 0.36, 0.02], [-0.34, 0.26, 0.43], 0.08, mainMat));
+    group.add(limbBetween([0.15, 0.36, 0.02], [0.34, 0.26, 0.43], 0.08, mainMat));
+    group.add(limbBetween([-0.34, 0.26, 0.43], [-0.4, 0.02, 0.36], 0.073, mainMat));
+    group.add(limbBetween([0.34, 0.26, 0.43], [0.4, 0.02, 0.36], 0.073, mainMat));
+    const seat = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.1, 0.44), new THREE.MeshBasicMaterial({ color: "#020617", transparent: true, opacity: 0.38, depthWrite: false }));
+    seat.position.set(0, 0.23, -0.02);
+    group.add(seat);
+  } else {
+    group.add(limbBetween([-0.22, 1.12, 0], [-0.48, 0.66, 0.08], 0.065, mainMat));
+    group.add(limbBetween([0.22, 1.12, 0], [0.48, 0.66, 0.08], 0.065, mainMat));
+    group.add(limbBetween([-0.12, 0.45, 0], [-0.24, 0.02, 0.05], 0.075, mainMat));
+    group.add(limbBetween([0.12, 0.45, 0], [0.24, 0.02, 0.05], 0.075, mainMat));
+  }
 
   const chest = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.32, 0.025), faceMat);
-  chest.position.set(0, 0.95, 0.185);
+  chest.position.set(0, isSitting ? 0.73 : 0.95, 0.185);
   group.add(chest);
 
   const backPlate = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.34, 0.025), backMat);
-  backPlate.position.set(0, 0.96, -0.185);
+  backPlate.position.set(0, isSitting ? 0.74 : 0.96, -0.185);
   group.add(backPlate);
 
   const eyeL = new THREE.Mesh(new THREE.SphereGeometry(0.025, 10, 8), darkMat);
-  eyeL.position.set(-0.064, 1.5, 0.178);
+  eyeL.position.set(-0.064, isSitting ? 1.24 : 1.5, 0.178);
   const eyeR = eyeL.clone();
   eyeR.position.x = 0.064;
   const nose = new THREE.Mesh(new THREE.ConeGeometry(0.025, 0.075, 10), darkMat);
-  nose.position.set(0, 1.455, 0.195);
+  nose.position.set(0, isSitting ? 1.195 : 1.455, 0.195);
   nose.rotation.x = Math.PI / 2;
   group.add(eyeL, eyeR, nose);
 
@@ -103,6 +120,7 @@ function makeActorMesh(actor, selected) {
   group.add(shadow);
 
   const label = makeTextSprite(actor.name, "#ffffff");
+  label.position.y = isSitting ? 1.46 : 1.72;
   group.add(label);
 
   if(selected) {
@@ -137,11 +155,15 @@ export default function Panorama3DStage({
   imageUrl,
   panoramaOffset = 0,
   panoramaZoom = 1,
+  sceneOffsetX = 0.5,
+  sceneOffsetY = 0.5,
+  stageAspectRatio,
   accent = "#22d3ee",
   theme,
   onActorsChange,
   onSelectActor,
   onOffsetChange,
+  onSceneViewChange,
 }) {
   const hostRef = useRef(null);
   const canvasRef = useRef(null);
@@ -149,8 +171,9 @@ export default function Panorama3DStage({
   const dragRef = useRef(null);
   const actorsRef = useRef(actors);
   const viewRef = useRef({ panoramaOffset, panoramaZoom });
+  const sceneImageSizeRef = useRef(null);
   actorsRef.current = actors;
-  viewRef.current = { panoramaOffset, panoramaZoom };
+  viewRef.current = { panoramaOffset, panoramaZoom, sceneOffsetX, sceneOffsetY };
 
   const renderScene = useCallback(() => {
     const state = threeRef.current;
@@ -206,6 +229,30 @@ export default function Panorama3DStage({
       threeRef.current = null;
     };
   }, [resize]);
+
+  useEffect(() => {
+    if(mode !== "scene" || !imageUrl) {
+      sceneImageSizeRef.current = null;
+      return undefined;
+    }
+    let cancelled = false;
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      if(cancelled) return;
+      sceneImageSizeRef.current = {
+        width: img.naturalWidth || img.width || 1,
+        height: img.naturalHeight || img.height || 1,
+      };
+    };
+    img.onerror = () => {
+      if(!cancelled) sceneImageSizeRef.current = null;
+    };
+    img.src = imageUrl;
+    return () => {
+      cancelled = true;
+    };
+  }, [imageUrl, mode]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -265,21 +312,41 @@ export default function Panorama3DStage({
       emitActorMove(actorId, event);
     } else {
       onSelectActor?.("");
-      if(mode !== "panorama") {
+      const rect = hostRef.current?.getBoundingClientRect();
+      if(mode === "panorama") {
+        dragRef.current = {
+          type: "view",
+          pointerId: event.pointerId,
+          startX: event.clientX,
+          width: rect?.width || 1,
+          startOffset: Number(viewRef.current.panoramaOffset) || 0,
+        };
+      } else if(onSceneViewChange) {
+        const imageSize = sceneImageSizeRef.current;
+        const width = rect?.width || 1;
+        const height = rect?.height || 1;
+        const zoom = clamp(Number(viewRef.current.panoramaZoom) || 1, 0.25, 3.2);
+        const drawW = width * zoom;
+        const drawH = imageSize?.width ? drawW * (imageSize.height / imageSize.width) : height * zoom;
+        dragRef.current = {
+          type: "scene-view",
+          pointerId: event.pointerId,
+          startX: event.clientX,
+          startY: event.clientY,
+          width,
+          height,
+          drawW,
+          drawH,
+          startOffsetX: clamp(numberOr(viewRef.current.sceneOffsetX, 0.5), 0, 1),
+          startOffsetY: clamp(numberOr(viewRef.current.sceneOffsetY, 0.5), 0, 1),
+        };
+      } else {
         dragRef.current = null;
         return;
       }
-      const rect = hostRef.current?.getBoundingClientRect();
-      dragRef.current = {
-        type: "view",
-        pointerId: event.pointerId,
-        startX: event.clientX,
-        width: rect?.width || 1,
-        startOffset: Number(viewRef.current.panoramaOffset) || 0,
-      };
     }
     try { event.currentTarget.setPointerCapture?.(event.pointerId); } catch {}
-  }, [emitActorMove, mode, onSelectActor, pickActor]);
+  }, [emitActorMove, mode, onSceneViewChange, onSelectActor, pickActor]);
 
   const handlePointerMove = useCallback((event) => {
     const drag = dragRef.current;
@@ -290,11 +357,23 @@ export default function Panorama3DStage({
       emitActorMove(drag.actorId, event);
       return;
     }
+    if(drag.type === "scene-view" && onSceneViewChange) {
+      const rangeX = (drag.width || 1) - (drag.drawW || drag.width || 1);
+      const rangeY = (drag.height || 1) - (drag.drawH || drag.height || 1);
+      const nextX = Math.abs(rangeX) < 1
+        ? drag.startOffsetX
+        : clamp((rangeX * drag.startOffsetX + event.clientX - drag.startX) / rangeX, 0, 1);
+      const nextY = Math.abs(rangeY) < 1
+        ? drag.startOffsetY
+        : clamp((rangeY * drag.startOffsetY + event.clientY - drag.startY) / rangeY, 0, 1);
+      onSceneViewChange?.({ x: nextX, y: nextY });
+      return;
+    }
     if(drag.type !== "view" || !onOffsetChange) return;
     const delta = (event.clientX - drag.startX) / Math.max(160, drag.width || 1);
     const nextOffset = ((drag.startOffset - delta) % 1 + 1) % 1;
     onOffsetChange?.(nextOffset);
-  }, [emitActorMove, onOffsetChange]);
+  }, [emitActorMove, onOffsetChange, onSceneViewChange]);
 
   const handlePointerUp = useCallback((event) => {
     if(!dragRef.current) return;
@@ -306,7 +385,11 @@ export default function Panorama3DStage({
   const bgWidth = Math.round(320 * clamp(Number(panoramaZoom) || 1, 0.75, 1.8));
   const bgOffset = ((Number(panoramaOffset) || 0) % 1 + 1) % 1;
   const isPanorama = mode === "panorama";
-  const sceneBgWidth = Math.round(100 * clamp(Number(panoramaZoom) || 1, 0.75, 1.8));
+  const fixedAspectRatio = !isPanorama && Number(stageAspectRatio) > 0 ? Number(stageAspectRatio) : 0;
+  const isDraggingView = dragRef.current?.type === "view" || dragRef.current?.type === "scene-view";
+  const sceneBgWidth = Math.round(100 * clamp(Number(panoramaZoom) || 1, 0.25, 3.2));
+  const sceneBgX = clamp(numberOr(sceneOffsetX, 0.5), 0, 1) * 100;
+  const sceneBgY = clamp(numberOr(sceneOffsetY, 0.5), 0, 1) * 100;
 
   return (
     <div
@@ -314,19 +397,21 @@ export default function Panorama3DStage({
       data-interactive="1"
       data-pano-stage={nodeId}
       style={{
-        flex: 1,
+        flex: fixedAspectRatio ? "0 0 auto" : 1,
+        width: "100%",
+        aspectRatio: fixedAspectRatio ? String(fixedAspectRatio) : undefined,
         minHeight: 230,
         borderRadius: 12,
         border: `1px solid ${theme?.border || "rgba(255,255,255,0.10)"}`,
         background: imageUrl
           ? `linear-gradient(rgba(0,0,0,0.07), rgba(0,0,0,0.16)), url(${imageUrl})`
           : `linear-gradient(135deg, ${accent}24, rgba(0,0,0,0.36))`,
-        backgroundSize: imageUrl ? (isPanorama ? `${bgWidth}% auto` : `${sceneBgWidth}% auto`) : "cover",
-        backgroundPosition: imageUrl ? (isPanorama ? `${(bgOffset * 100).toFixed(2)}% center` : "center") : "center",
-        backgroundRepeat: imageUrl && isPanorama ? "repeat-x" : "no-repeat",
+        backgroundSize: imageUrl ? (isPanorama ? `cover, ${bgWidth}% auto` : `cover, ${sceneBgWidth}% auto`) : "cover",
+        backgroundPosition: imageUrl ? (isPanorama ? `center, ${(bgOffset * 100).toFixed(2)}% center` : `center, ${sceneBgX.toFixed(2)}% ${sceneBgY.toFixed(2)}%`) : "center",
+        backgroundRepeat: imageUrl ? (isPanorama ? "no-repeat, repeat-x" : "no-repeat, no-repeat") : "no-repeat",
         overflow: "hidden",
         position: "relative",
-        cursor: dragRef.current?.type === "view" ? "grabbing" : isPanorama ? "grab" : "default",
+        cursor: isDraggingView ? "grabbing" : (isPanorama || imageUrl ? "grab" : "default"),
         touchAction: "none",
         userSelect: "none",
       }}
@@ -346,7 +431,7 @@ export default function Panorama3DStage({
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerUp}
         onLostPointerCapture={handlePointerUp}
-        style={{ position: "absolute", inset: 0, width: "100%", height: "100%", display: "block", cursor: dragRef.current ? "grabbing" : isPanorama ? "grab" : "default" }}
+        style={{ position: "absolute", inset: 0, width: "100%", height: "100%", display: "block", cursor: dragRef.current ? "grabbing" : (isPanorama || imageUrl ? "grab" : "default") }}
       />
       <div style={{ position: "absolute", left: 10, bottom: 10, display: "flex", gap: 6, pointerEvents: "none" }}>
         <span style={{ padding: "4px 7px", borderRadius: 6, background: "rgba(0,0,0,0.5)", color: "white", fontSize: 10 }}>{isPanorama ? "360 预演" : "场景预演"}</span>
